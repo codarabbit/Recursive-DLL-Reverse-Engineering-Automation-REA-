@@ -1,282 +1,192 @@
- 
-# Recursive DLL Reverse Engineering Automation (REA)
+# DLL Reverse-Engineering Batch Pipeline (`rea_batch_v2.py`)
 
-A Python-based batch reverse engineering tool for recursively analysing Windows DLL files using **ILSpy** and **Ghidra**.
-
-REA automatically identifies managed .NET, native, and mixed-mode DLLs, selects the appropriate analysis engine, and exports decompiled source code, function information, and analysis metadata while preserving the original directory structure.
-
-## Features
-
-- **Recursive DLL discovery** — Scans input directories and subdirectories for `.dll` files.
-- **PE analysis** — Identifies PE architecture, sections, CLR metadata, and binary type without third-party Python packages.
-- **Automatic binary classification** — Managed .NET, native, mixed-mode, and unresolved CLR-header binaries.
-- **Managed DLL analysis using ILSpy** — Exports reconstructed C# source code and Intermediate Language (IL).
-- **Native DLL analysis using Ghidra** — Enumerates functions and exports C-like pseudocode.
-- **Temporary native DLL staging** — Copies native DLLs into short local temporary paths before invoking Ghidra, avoiding Windows path parsing issues involving spaces and parentheses.
-- **SHA-256 hashing** — Records file hashes and sizes.
-- **Structured output** — Preserves the original directory hierarchy.
-- **Batch reporting** — Generates individual processing reports and an overall batch summary.
-- **Error handling** — Records failures and supports partial-success reporting.
-
-## Architecture
-
-```text
-                    INPUT DIRECTORY
-                           |
-                           v
-                Recursive DLL Discovery
-                           |
-                           v
-                     PE Inspection
-                           |
-                           v
-                  Binary Classification
-                           |
-              +------------+------------+
-              |                         |
-              v                         v
-       Managed / Mixed             Native / Mixed
-              |                         |
-              v                         v
-           ILSpy                     Ghidra
-              |                         |
-       +------+-------+          +------+-------+
-       |              |          |              |
-       v              v          v              v
-    C# Source      IL Export   Function      C Pseudocode
-                              Metadata
-              |                         |
-              +------------+------------+
-                           |
-                           v
-                  Analysis Reports
-                           |
-                           v
-                  Batch Summary JSON
-```
+Recursively analyses every `.dll` under a folder using **ILSpy** (managed .NET)
+and **Ghidra** (native), and produces decompiled source, deep PE metadata, a
+searchable function inventory, and dependency / call graphs. Runs are
+**incremental and resumable**, so a 1,000+ DLL job can be stopped and restarted.
 
 ## Requirements
 
-### Operating system
-- Windows 10 or Windows 11
-- Python 3.10 or later
-- .NET SDK/runtime required by ILSpy
-- Ghidra with its headless launcher
-
-### Install ILSpy
-
-```powershell
-dotnet tool install --global ilspycmd
-```
-
-Verify:
-
-```powershell
-ilspycmd --version
-```
-
-Ensure the .NET global tools directory is available in PATH.
-
-### Install Ghidra
-
-Install Ghidra and locate its headless launcher:
-
-```text
-C:\re\GHIDRA\support\analyzeHeadless.bat
-```
-
-REA uses Ghidra Headless Analyzer and a Java-based Ghidra script to export decompiled functions.
-
-## Installation
-
-Clone the repository:
-
-```powershell
-git clone https://github.com/codarabbit/REA.git
-cd REA
-```
-
-No additional Python packages are required by the current implementation.
-
-## Usage
-
-### Basic execution
-
-```powershell
-python REA.py --input "C:\Path\To\DLLs" --output "C:\RE_Results"
-```
-
-### Specify Ghidra installation
-
-```powershell
-python REA.py `
-  --input "C:\Path\To\DLLs" `
-  --output "C:\RE_Results" `
-  --ghidra "C:\re\GHIDRA\support\analyzeHeadless.bat"
-```
-
-### Specify a local temporary directory
-
-Native DLLs are copied into temporary local workspaces before Ghidra analysis.
-
-```powershell
-python REA.py `
-  --input "C:\Program Files\Vendor\Product" `
-  --output "C:\RE_Results" `
-  --ghidra "C:\re\GHIDRA\support\analyzeHeadless.bat" `
-  --temp-dir "C:\re\tmp"
-```
-
-### Preserve temporary analysis folders
-
-By default, temporary Ghidra workspaces are deleted after processing.
-
-Use `--keep-temp` to retain them for troubleshooting:
-
-```powershell
-python REA.py `
-  --input "C:\Path\To\DLLs" `
-  --output "C:\RE_Results" `
-  --temp-dir "C:\re\tmp" `
-  --keep-temp
-```
-
-## Command-line Arguments
-
-| Argument | Required | Description |
+| Tool | Needed for | Notes |
 |---|---|---|
-| `--input` | Yes | Root directory containing DLL files |
-| `--output` | Yes | Directory where analysis results are stored |
-| `--ghidra` | No | Path to `analyzeHeadless.bat` |
-| `--temp-dir` | No | Local base directory for temporary Ghidra workspaces |
-| `--keep-temp` | No | Retains temporary workspaces after processing |
+| Python 3.9+ | everything | standard library only, no pip packages |
+| `ilspycmd` | managed / mixed-mode DLLs | `dotnet tool install --global ilspycmd` |
+| Ghidra (headless) | native / mixed-mode DLLs | default path `C:\re\GHIDRA\support\analyzeHeadless.bat`, override with `--ghidra` |
+| Graphviz (optional) | `--svg` | `dot` must be on `PATH` |
 
-## Output Structure
+## Quick start
 
-REA preserves the relative directory structure of the original DLL collection.
+```powershell
+# Try a few DLLs first
+python rea_batch_v2.py --input "C:\path\to\dlls" --output C:\re\out --temp-dir C:\re\tmp --filter "*Name*" --debug
 
-```text
-RE_Results/
-│
-├── ModuleA/
-│   ├── ARM_Helper/
-│   │   ├── analysis_summary.json
-│   │   ├── processing_result.json
-│   │   └── Generated_Native/
-│   │       ├── functions.json
-│   │       ├── functions.txt
-│   │       ├── ghidra_console.log
-│   │       ├── GhidraScripts/
-│   │       │   └── ExportDecompiled.java
-│   │       └── decompiled/
-│   │           ├── 0001_function_name.c
-│   │           └── 0002_function_name.c
-│   │
-│   └── WifiManager/
-│       ├── analysis_summary.json
-│       └── Generated_CSharp/
-│           ├── Source/
-│           │   └── ...
-│           └── all_methods_il.txt
-│
-└── batch_summary.json
+# Full run (safe to stop with Ctrl+C and re-run: it resumes)
+python rea_batch_v2.py --input "C:\path\to\dlls" --output C:\re\out --temp-dir C:\re\tmp
+
+# Progress and failure report
+python rea_batch_v2.py --input "C:\path\to\dlls" --output C:\re\out --status
+
+# Retry only what failed
+python rea_batch_v2.py --input "C:\path\to\dlls" --output C:\re\out --temp-dir C:\re\tmp --only-failed
 ```
 
-### Generated files
+Notes:
+- `--output` must be on a drive that exists. The folder is created if missing.
+- Use a short, local `--temp-dir` (for example `C:\re\tmp`). Ghidra struggles with
+  long paths and network drives.
+- Output for ~1,000 DLLs can reach several GB, including a copy of every original DLL.
 
-| File / Directory | Description |
+## What it does per DLL
+
+1. Hashes the file (SHA-256) and compares it with the manifest.
+2. Skips it if it is unchanged and already complete.
+3. Parses the PE structure (pure Python) and writes `pe_metadata.json`.
+4. Copies the original DLL to `Original/` (SHA-256 verified).
+5. Decompiles with ILSpy (.NET) and/or Ghidra (native), depending on the binary type.
+6. Writes a summary, graphs, and indexes the DLL into `inventory.db`.
+
+| Binary type | Tool used |
 |---|---|
-| `analysis_summary.json` | DLL metadata, SHA-256, file size, and PE information |
-| `processing_result.json` | Processing status, binary type, generated file counts, and errors |
-| `Source/` | Decompiled C# source files |
-| `all_methods_il.txt` | Exported .NET Intermediate Language |
-| `functions.json` | Native function metadata and decompilation status |
-| `functions.txt` | Human-readable function listing |
-| `decompiled/` | Individual C-like pseudocode files |
-| `ghidra_console.log` | Ghidra execution output and diagnostic information |
-| `GhidraScripts/` | Java-based Ghidra export script |
-| `batch_summary.json` | Overall batch processing results |
+| `MANAGED_DOTNET` | ILSpy |
+| `MIXED_MODE` | ILSpy and Ghidra |
+| `NATIVE`, `CLR_HEADER_UNRESOLVED` | Ghidra |
+| `INVALID_OR_UNKNOWN` | none, recorded as `INVALID_BINARY` |
 
-## Processing Status
+## Output layout
 
-| Status | Meaning |
+```
+<output>\
+  manifest.db              resume state: SHA-256, per-stage status, tool versions, errors
+  inventory.db             searchable SQLite index (see "Searching")
+  events.jsonl             structured event log (one JSON object per line)
+  batch.log                full text log
+  batch_summary.json       totals and per-DLL results for the latest run
+  graphs\dll_dependencies.dot   DLL-to-DLL dependency graph for the whole set
+  <relative folder>\<dll name>\
+      Original\<dll>                copy of the source DLL
+      pe_metadata.json              full PE metadata (see below)
+      analysis_summary.json         compact summary
+      processing_result.json        status, stages, errors, warnings
+      Logs\pipeline.log  ilspy.log  ghidra.log
+      Generated_CSharp\Source\*.cs  all_methods_il.txt
+      Generated_Native\decompiled\*.c
+                       functions.json  functions.txt  function_inventory.csv  program.json
+      Graphs\dependencies.dot  imports.dot  call_graph.dot  api_calls.dot
+             entry_paths.dot  entry_paths.json   (+ .svg with --svg)
+```
+
+### PE metadata (`pe_metadata.json`)
+
+Architecture, image base, entry point (and its section), timestamp, subsystem,
+linker/OS versions, DLL characteristics (ASLR, DEP, CFG, etc.), sections with
+entropy, overlay size, Authenticode presence, exports (including forwarders),
+imports and delay-imports, imported DLL dependencies, imphash, API categories
+(triage keyword lists, not verdicts), debug directory (PDB path, GUID, age),
+TLS callbacks, resource inventory, embedded manifest, version-info strings, and
+.NET CLR header details.
+
+### Function intelligence (native DLLs)
+
+For each function: name, address, namespace, signature, calling convention,
+parameters, return type, size, basic-block count, CFG edges, cyclomatic complexity
+estimate (edges - blocks + 2), cross-references, callers, callees, external API
+calls, whether it is a thunk or entry point, and the decompiled C file. Written
+to `functions.json` and `function_inventory.csv`.
+
+### Graphs
+
+| File | Shows |
 |---|---|
-| `SUCCESS` | Applicable analysis completed without recorded errors |
-| `PARTIAL` | An analysis engine succeeded, but another operation reported an error |
-| `FAILED` | No applicable analysis engine completed successfully |
+| `dependencies.dot` | the DLL and the DLLs it imports (dashed = delay-load, blue = also in your input set) |
+| `imports.dot` | DLL, imported library, API (suspicious API categories highlighted) |
+| `call_graph.dot` | function-to-function calls (entry points green, API-calling functions red) |
+| `api_calls.dot` | functions, imported APIs grouped by library |
+| `entry_paths.dot/.json` | shortest paths from entry points to APIs |
 
-The batch summary includes total DLLs processed and counts of successful, partially successful, and failed analyses.
+Large graphs are truncated to `--graph-max-nodes` and labelled as truncated.
+For the global graph on huge sets, render with `sfdp -Tsvg`.
 
-## Technical Implementation
+## Searching (`inventory.db`)
 
-### PE inspection
+Open with any SQLite tool or Python's `sqlite3`.
 
-The script uses Python's `struct` module to inspect PE headers and determine:
+```sql
+-- Which DLLs call CreateRemoteThread?
+SELECT DISTINCT d.name FROM api_calls a JOIN dlls d ON d.id = a.dll_id
+WHERE a.api = 'CreateRemoteThread';
 
-- DOS and PE signatures
-- Machine architecture
-- Optional header format
-- PE sections
-- CLR data directory
-- CLR flags
-- Managed versus native classification
+-- Functions by name or signature (full-text)
+SELECT f.name, f.signature, d.name FROM functions f JOIN dlls d ON d.id = f.dll_id
+WHERE f.id IN (SELECT rowid FROM functions_fts WHERE functions_fts MATCH 'decrypt');
 
-### Managed analysis
+-- Most complex functions
+SELECT d.name, f.name, f.complexity FROM functions f JOIN dlls d ON d.id = f.dll_id
+ORDER BY f.complexity DESC LIMIT 20;
 
-ILSpy is invoked through its command-line interface to reconstruct C# source and export IL.
+-- DLLs sharing the same imphash
+SELECT imphash, GROUP_CONCAT(name) FROM dlls GROUP BY imphash HAVING COUNT(*) > 1;
+```
 
-### Native analysis
+Tables: `dlls`, `exports`, `imports`, `dependencies`, `functions`, `api_calls`
+(plus `functions_fts`). Rebuild from existing outputs with `--reindex`.
 
-Ghidra Headless Analyzer performs binary analysis and function decompilation.
+## Resume, retries and failure handling
 
-To improve Windows path compatibility, the original DLL is copied into a short temporary workspace before Ghidra is launched. The generated Java Ghidra script exports function information and decompiled pseudocode. Results are then copied into the corresponding output directory.
+- **Resume:** state is saved after every DLL. After Ctrl+C or a crash, re-run
+  the same command. Completed work is skipped, and each tool (ILSpy / Ghidra) is
+  tracked separately, so a successful stage is never repeated.
+- **Changed files:** if a DLL's SHA-256 changes, it is reanalysed. Unchanged files
+  are recognised by size and modified time without re-hashing (`--verify-hashes`
+  forces re-hashing).
+- **Retries:** retryable errors (timeouts, project locks, I/O errors) are retried
+  `--retries` times (default 1) with doubling backoff. Timeouts grow by
+  `--timeout-multiplier` each retry.
+- **Error categories:** `TIMEOUT`, `OUT_OF_MEMORY`, `PROJECT_LOCK`, `INVALID_BINARY`,
+  `SCRIPT_ERROR`, `IO_ERROR`, `TOOL_MISSING`, `OUTPUT_MISSING`, `UNKNOWN`.
+  `INVALID_BINARY` is treated as permanent and skipped on later runs unless you pass
+  `--retry-failed`.
+- **Interrupt:** the first Ctrl+C stops the running tool safely and records
+  `INTERRUPTED`. A second Ctrl+C force-quits.
+- **Troubleshooting:** `--keep-failed-temp` (or `--debug`) preserves the Ghidra work
+  folder of any failed run. Its path is recorded in the log and `events.jsonl`.
+  Check `Logs\ghidra.log` in the DLL's output folder first.
+- **Exit codes:** `0` all good, `1` at least one DLL failed this run, `130` interrupted.
 
-## Limitations
+## Options
 
-- Decompilation does not guarantee recovery of original source code, variable names, comments, or project structure.
-- Native decompiler output is reconstructed pseudocode, not original source code.
-- Obfuscated, packed, corrupted, or unsupported binaries may produce incomplete results.
-- Ghidra analysis time depends on DLL size, complexity, architecture, and available system resources.
-- Some PE files may contain malformed or unusual headers that affect classification or analysis.
-- Mixed-mode DLLs are processed using both applicable analysis engines, but results may be incomplete.
-- This tool currently targets Windows DLL files and uses Windows-specific Ghidra headless execution.
+| Option | Purpose |
+|---|---|
+| `--input`, `--output` | required folders |
+| `--ghidra PATH` | Ghidra `analyzeHeadless` launcher |
+| `--temp-dir PATH` | base folder for Ghidra work directories |
+| `--filter GLOB` | only DLLs whose relative path matches (case-insensitive) |
+| `--force` | reanalyse everything |
+| `--only-failed` | only DLLs that failed or were interrupted |
+| `--retry-failed` | also retry permanent failures |
+| `--reanalyse-on-tool-change` | redo DLLs when ILSpy/Ghidra version differs from the recorded one |
+| `--verify-hashes` | always re-hash files |
+| `--reindex` | rebuild `inventory.db` from existing outputs |
+| `--status` | print manifest status and exit |
+| `--retries N`, `--retry-backoff S`, `--timeout-multiplier X` | retry policy |
+| `--ilspy-timeout S`, `--ghidra-timeout S` | per-stage timeouts (defaults 1800 / 3600) |
+| `--ghidra-analysis-timeout S` | pass `-analysisTimeoutPerFile` to Ghidra |
+| `--no-decompile` | export function metadata only (much faster) |
+| `--decompile-timeout S` | per-function decompile limit (default 120) |
+| `--keep-temp` / `--keep-failed-temp` | keep all / failed Ghidra temp folders |
+| `--debug` | verbose console output and `--keep-failed-temp` |
+| `--no-copy-original` | do not copy the source DLL to `Original\` |
+| `--no-graphs`, `--svg`, `--dot-engine`, `--graph-max-nodes`, `--graph-include-external` | graph controls |
 
-## Legal and Ethical Use
+## Known limitations
 
-This project is intended for authorised reverse engineering, malware analysis, software interoperability research, digital forensics, security auditing, and educational purposes.
-
-Only analyse DLLs that you own or are legally authorised to examine. Respect applicable software licences, intellectual property rights, and local laws.
-
-## Dependencies
-
-| Component | Purpose | Licence |
-|---|---|---|
-| Python | Automation and PE inspection | PSF |
-| ILSpy | .NET decompilation | MIT |
-| Ghidra | Native binary analysis and decompilation | Apache 2.0 |
-
-Refer to the respective projects for their licence terms.
-
-## Contributing
-
-Contributions, bug reports, feature requests, and improvements are welcome.
-
-1. Fork the repository.
-2. Create a feature branch.
-3. Commit your changes.
-4. Submit a pull request.
-
-## Disclaimer
-
-REA is provided for research and educational purposes. The authors are not responsible for misuse, unauthorised analysis, or damage resulting from use of this software.
-
-## Author
-
-**codarabbit**
-
-GitHub: [https://github.com/codarabbit](https://github.com/codarabbit)
-
----
-
-*Built by codarabbit — automating DLL reverse engineering with Python, ILSpy, and Ghidra.*
-
+- Developed and tested on Linux with stand-in ILSpy/Ghidra programs. Run it on a
+  handful of DLLs with real tools before a full batch. If the Ghidra export script
+  fails to compile on your Ghidra version, the error appears in `Logs\ghidra.log`
+  as `SCRIPT_ERROR`.
+- Cyclomatic complexity is an estimate from Ghidra's basic-block graph.
+- API categories (injection, network, crypto, and so on) are keyword lists for
+  triage, not evidence of malicious behaviour.
+- The imphash may differ from other tools for a few ordinal-only imports.
+- Changing the Ghidra export script version triggers reanalysis of native DLLs.
+- Output and analysis are derived from files you are authorised to examine.
+  Check the software licence before decompiling or sharing results.
